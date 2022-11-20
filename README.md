@@ -18,6 +18,8 @@ We use the KaraOne dataset to achive the mentioned goals. This contains two type
 
 ## File functions and running options.
 ### Files
+train.ipynb: Think of it as our project's main function, it calls the other components. Trains the neural net, runs predictions and evaluates them using the most well-known metrics.
+
 example.py: Demonstrates the implemented functions, how we get a ready dataset with a few lines of code.
 
 database.py: Implements the database via the Database class.
@@ -29,16 +31,18 @@ Its most important functions are:
     extract( participant ): Extracts the given participant's downloaded .tar.bz2 files.
 
     preprocess_eeg( participant ): Preprocesses the participant's EEG signal, splits it into imagined and spoken trials, then finally saves them.
+    
+    load_data( participant, train_eeg_type, test_eeg_type, train_size, test_size ): Loads the EEG trials and labels, already split into training, validation and test sections.
 
-    load_labels( participant ): Loads the trial labels.
-
-    load_eeg_trials( participant ): Loads the EEG trials.
-
-utils.py: Implements utility functions that comes in handy.
+utils.py: Implements utility functions that come in handy.
 
 Its most importatnt functions are:
 
     train_valid_test_split(trials, labels, train_size, test_size): Splits the dataset into train-validation-test sets.
 
 ### Running options
-The current running options are to use the implemented functions from a python terminal or python script.
+Download the repository and open the train.ipynb Jupyter Notebook.
+
+Before first run: Specify which participant's data to download in block 2. Be careful, as one participant can take around 10 minutes to download and process, downloading all can take a long time. After the first run, set 'download' to False, unless you want to add more participants.
+
+After setting these parameters, just run every block. You're going to see feedback about the training process, the best performing model's going to be saved. After the training process ends, the script will load the best model and show its evaluation and metrics.
