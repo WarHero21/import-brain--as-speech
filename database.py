@@ -25,6 +25,7 @@ import pandas as pd
 class Database(object):
 
     PARTICIPANTS = ["MM05","MM08","MM09","MM10","MM11","MM12","MM14","MM15","MM16","MM18","MM19","MM20","MM21","P02"]
+    
     SPEAKING_TRIAL_LEN = 1200
     THINKING_TRIAL_LEN = 4800
 
@@ -425,7 +426,7 @@ class Database(object):
         Input
         -----
         participant: The participant's ID. E.g.: "MM05"
-        eeg_type: "thinking" | "speaking" | "mixed" | "concat"
+        eeg_type: "thinking" | "speaking" | "concat"
 
         Returns - List of panda dataframes.
         -------
@@ -440,6 +441,8 @@ class Database(object):
         ValueError: if the eeg_type is not thinking or speaking.
 
         """
+        if not train_eeg_type == "thinking" or not train_eeg_type == "speaking" or not train_eeg_type == "concat":
+            raise ValueError(":(")
         X = self._load_eeg_trials(participant, train_eeg_type)
         Y = self._load_labels(participant, train_eeg_type)
         return train_valid_test_split(X, Y, train_size, test_size)
