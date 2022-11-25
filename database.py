@@ -14,6 +14,10 @@ from sklearn.model_selection import train_test_split
 from scipy import signal as sig
 import numpy as np
 from sklearn.preprocessing import StandardScaler
+ # For mel-spektrogram
+import librosa, librosa.display
+import matplotlib.pyplot as plt
+
 
 # For saving the EEG trials.
 import pandas as pd
@@ -21,6 +25,8 @@ import pandas as pd
 class Database(object):
 
     PARTICIPANTS = ["MM05","MM08","MM09","MM10","MM11","MM12","MM14","MM15","MM16","MM18","MM19","MM20","MM21","P02"]
+    SPEAKING_TRIAL_LEN = 1200
+    THINKING_TRIAL_LEN = 4800
 
     def __init__(self, database_dir):
         self.DATABASE_DIR = database_dir
@@ -36,6 +42,9 @@ class Database(object):
             os.mkdir(self.TAR_DIR)
         if not os.path.exists(self.PARTICIPANTS_DIR):
             os.mkdir(self.PARTICIPANTS_DIR)
+        if not os.path.exists(os.path.join(self.PARTICIPANTS_DIR, "trial_lengths.txt")):
+            with open(os.path.join(self.PARTICIPANTS_DIR, "trial_lengths.txt"), "w") as file:
+                file.write("participant\tmin\tmax\tmean\n")
 
     def initialize(self, participant):
         self.download(participant)
@@ -122,8 +131,8 @@ class Database(object):
         participant: The participant's ID. E.g.: "MM05"
 
         """
-        owd = os.getcwd()
-        os.chdir(os.path.join("Database","PARTICIPANTS",participant))
+        owd = os.getcwd() # working directory to switch back later.
+        os.chdir(os.path.join("Database","PARTICIPANTS", participant))
 
         CNT_PATH = glob.glob("*.cnt")[0]
         INDECIES_PATH = glob.glob("epoch_inds.mat")[0]
@@ -135,46 +144,56 @@ class Database(object):
         os.chdir(owd)
 
         # Drop Channels
-        eeg.drop_channels(['VEO', 'HEO', 'EKG', 'EMG', 'Trigger', 'M1', 'M2'])
+        eeg.drop_channels(['VEO', 'HEO', 'EMG', 'EKG', 'Trigger', 'M1', 'M2'])
 
         # Plot raw EEG signal.
         self._plot_eeg(participant, eeg, "raw_eeg")
 
-        # Butterworth filter the EEG signal.
-        eeg = self._butterworth_filter_eeg(eeg)
-
-        # ICA component analysis
-        eeg.filter(l_freq=1, h_freq=None)
-        ica = mne.preprocessing.ICA(n_components = 20, random_state=100)
-        ica.fit(eeg)
-        ica.apply(eeg)
-        #ica.plot_components()
-
+        # Filter the EEG signal.
+        eeg.filter(l_freq=1.0, h_freq=50.0)
+        #eeg = self._butterworth_filter_eeg(eeg)
+        
         # Plot the filtered EEG.
         self._plot_eeg(participant, eeg, "filtered_eeg")
+
+        # ICA component analysis
+        ica = mne.preprocessing.ICA(n_components = 20, random_state=100)
+        ica = ica.fit(eeg)
+        #ica.plot_sources(eeg, show_scrollbars=False)
+        eeg = ica.apply(eeg)
+
+        # Plot the ICA removed EEG.
+        self._plot_eeg(participant, eeg, "ica_eeg")
+        #ica.plot_components()
         
         # Split the EEG into trials and save them.
         self._eeg_to_data(participant, eeg, indecies)
 
-    def _eeg_to_data(self, participant, eeg, indecies):
-        """
-        Split the EEG into trials and save them.
+    def create_melspektrograms(self, participant, eeg_type, n_fft= 256, hop_length= 128):
 
-        Note
-        ----
+        def save_melspektrograms(n_fft, hop_length, eeg_type, output_dir):
+            eeg_trials = self._load_eeg_trials(participant, eeg_type)
+            i=0
+            for eeg_trial in eeg_trials:
+                mel_spectrogram = librosa.feature.melspectrogram(y=eeg_trial, sr=1000, n_fft=n_fft, hop_length=hop_length)
+                print(mel_spectrogram[0])
+                print(mel_spectrogram[1])
+                print(mel_spectrogram[2])
+                pd.DataFrame(data=mel_spectrogram).to_csv(os.path.join(output_dir, f"{i}mel.csv"), header=True, index=False)
+                i+=1
 
-        Input
-        -----
-        participant
-        eeg
-        indecies
-
-
-        """
         DATA_DIR = self.PARTICIPANT_DATA_DIR(participant)
         SPEAKING_DATA_DIR = os.path.join(DATA_DIR, "SPEAKING")
         THINKING_DATA_DIR = os.path.join(DATA_DIR, "THINKING")
 
+        save_melspektrograms(n_fft, hop_length, "thinking", SPEAKING_DATA_DIR)
+        save_melspektrograms(n_fft, hop_length, "speaking", THINKING_DATA_DIR)
+
+    def _eeg_to_data(self, participant, eeg, indecies):
+        DATA_DIR = self.PARTICIPANT_DATA_DIR(participant)
+        SPEAKING_DATA_DIR = os.path.join(DATA_DIR, "SPEAKING")
+        THINKING_DATA_DIR = os.path.join(DATA_DIR, "THINKING")
+        # Check if data directories exist.
         if not os.path.exists(DATA_DIR):
             os.mkdir(DATA_DIR)
             os.mkdir(SPEAKING_DATA_DIR)
@@ -184,25 +203,39 @@ class Database(object):
         if not os.path.exists(THINKING_DATA_DIR):
             os.mkdir(THINKING_DATA_DIR) 
 
-        self._save_eeg_trials(eeg, indecies['speaking_inds'][0][1::2][:-1], SPEAKING_DATA_DIR)
-        self._save_eeg_trials(eeg, indecies['thinking_inds'][0][:-1], THINKING_DATA_DIR)
+        self._save_eeg_trials(eeg, indecies['speaking_inds'][0][1::2][:-1], SPEAKING_DATA_DIR, Database.SPEAKING_TRIAL_LEN)
+        self._save_eeg_trials(eeg, indecies['thinking_inds'][0][:-1], THINKING_DATA_DIR, Database.THINKING_TRIAL_LEN)
  
-    def _save_eeg_trials(self, eeg, indecies, output_dir):
-        """
-        """
+    def _eeg_trials_min_max_mean_len(self, eeg, indecies, participant):
         maxlen = 0
+        minlen = 10000
+        meanlen = 0
         for index_pair in indecies:
             sample_start, sample_end = index_pair[0][0], index_pair[0][1]
             eeg_trial = eeg.get_data("all", sample_start, sample_end)
+            meanlen += eeg_trial.shape[1]
+            minlen = min(minlen, eeg_trial.shape[1])
             maxlen = max(maxlen, eeg_trial.shape[1])
 
+        meanlen /= len(indecies)
+        with open(os.path.join(self.PARTICIPANTS_DIR, "trial_lengths.txt"), "a") as file:
+            file.write(f"{participant}\t{minlen}\t{maxlen}\t{meanlen}\n")
+
+    def _save_eeg_trials(self, eeg, indecies, output_dir, len_to_cut):
         i = 0
         for index_pair in indecies:
             sample_start, sample_end = index_pair[0][0], index_pair[0][1]
             eeg_trial = eeg.get_data("all", sample_start, sample_end)
-            if maxlen - eeg_trial.shape[1] > 0:
-                eeg_trial = np.append(eeg_trial, np.zeros((eeg_trial.shape[0], maxlen - eeg_trial.shape[1])), axis = 1)
-            pd.DataFrame(data=eeg_trial).to_csv(os.path.join(output_dir, f"{i}.csv"), header=True, index=False)
+
+            # Set the trial length to len_to_cut.
+            if len_to_cut - eeg_trial.shape[1] > 0:
+                eeg_trial = np.append(eeg_trial, np.zeros((eeg_trial.shape[0], len_to_cut - eeg_trial.shape[1])), axis = 1)
+            elif len_to_cut - eeg_trial.shape[1] < 0:
+                eeg_trial = np.split(eeg_trial, [len_to_cut], axis=1)[0]
+
+            normalized_eeg_trial = eeg_trial / np.linalg.norm(eeg_trial)
+            # Save the eeg_trial.
+            pd.DataFrame(data=normalized_eeg_trial).to_csv(os.path.join(output_dir, f"{i}.csv"), header=True, index=False)
             i+=1
 
     def _plot_eeg(self, participant, eeg, plot_name):
@@ -228,9 +261,9 @@ class Database(object):
 
         eeg.compute_psd().plot(show=False).savefig(os.path.join(FIGURE_DIR, f"{plot_name}_psd.png"))
 
-    # Source: https://github.com/wjbladek/SilentSpeechClassifier/blob/master/SSC.py
-    # Line 177, filter_data()
-    def _butterworth_filter_eeg(self, eeg, lp_freq = 59, hp_freq = 1):
+    def _butterworth_filter_eeg(self, eeg, hp_freq = 1, lp_freq = 60):
+        # Source: https://github.com/wjbladek/SilentSpeechClassifier/blob/master/SSC.py
+        # Line 177, filter_data()
         """
         Executes the butterworth filtering on the eeg signals.
 
@@ -256,6 +289,45 @@ class Database(object):
                 eeg[idx] = sig.filtfilt(b, a, eeg_vector)
         return eeg
 
+    def _eeg_trials_min_max_mean_len(self, eeg, indecies, participant):
+        maxlen = 0
+        minlen = 10000
+        meanlen = 0
+        for index_pair in indecies:
+            sample_start, sample_end = index_pair[0][0], index_pair[0][1]
+            eeg_trial = eeg.get_data("all", sample_start, sample_end)
+            meanlen += eeg_trial.shape[1]
+            minlen = min(minlen, eeg_trial.shape[1])
+            maxlen = max(maxlen, eeg_trial.shape[1])
+
+        meanlen /= len(indecies)
+        with open(os.path.join(self.PARTICIPANTS_DIR, "trial_lengths.txt"), "a") as file:
+            file.write(f"{participant}\t{minlen}\t{maxlen}\t{meanlen}\n")
+   
+    def _print_len_infos(self):
+
+        def print_min_max_mean(lines):
+            MINLEN = 10000
+            MAXLEN = 0
+            APPROX_MEAN = 0
+            for line in lines:
+                tokens = line.split("\t")[1:]
+                minlen, maxlen, meanlen = tokens
+                MINLEN = min(MINLEN, int(minlen))
+                MAXLEN = max(MAXLEN, int(maxlen))
+                APPROX_MEAN += float(meanlen)
+            print(f"MIN:  {MINLEN}\nMAX: {MAXLEN}\nAPPROX_MEAN: {APPROX_MEAN/len(lines)}")
+
+        with open(os.path.join(self.PARTICIPANTS_DIR, "trial_lengths.txt"), "r") as file:
+            lines = file.readlines()[1:]
+            speaking_lines = lines[0::2]
+            thinking_lines = lines[1::2]
+
+            print("----SPEAKING----")
+            print_min_max_mean(speaking_lines)
+            print("----THINKING----")
+            print_min_max_mean(thinking_lines)
+    
     def _load_eeg_trials(self, participant, eeg_type):
         """
         Loads the participant's specific (thinking/speaking) EEG trials into memory and returns it.
@@ -342,7 +414,7 @@ class Database(object):
             return Y+Y
         return Y
 
-    def load_data(self, participant, train_eeg_type, test_eeg_type, train_size = 0.8, test_size = 0.1):
+    def load_data(self, participant, train_eeg_type, train_size = 0.8, test_size = 0.1):
         """
         Loads the participant's specific (thinking/speaking) EEG trials into memory and returns it.
 
@@ -361,7 +433,6 @@ class Database(object):
         if eeg_type is:
             "thinking": Loads the thinking eeg trials.
             "speaking": Loads the speaking eeg trials.
-            "mixed": Loads the thinking and speaking eeg trials. The eeg trials returns as [thinking, speaking].
             "concat": Loads the thinking and speaking eeg trials in a concatenated form.
 
         Raise
@@ -369,19 +440,6 @@ class Database(object):
         ValueError: if the eeg_type is not thinking or speaking.
 
         """
-        if train_eeg_type != test_eeg_type and (train_eeg_type == "concat" or test_eeg_type == "concat" or train_eeg_type == "mixed" or test_eeg_type == "mixed" ):
-            raise ValueError("Rossz input! A train és test típusok nem hasonlóak.")
-
-        if train_eeg_type == test_eeg_type:
-            X = self._load_eeg_trials(participant, train_eeg_type)
-            Y = self._load_labels(participant, train_eeg_type)
-            return train_valid_test_split(X, Y, train_size, test_size)
-        else:
-            X_train = self._load_eeg_trials(participant, train_eeg_type)
-            Y_train = self._load_labels(participant, train_eeg_type)
-            
-            X = self._load_eeg_trials(participant, test_eeg_type)
-            Y = self._load_labels(participant, test_eeg_type)
-
-            X_valid, X_test, Y_valid, Y_test = train_test_split(X,Y, test_size=0.5)
-            return X_train, X_valid, X_test, Y_train, Y_valid, Y_test
+        X = self._load_eeg_trials(participant, train_eeg_type)
+        Y = self._load_labels(participant, train_eeg_type)
+        return train_valid_test_split(X, Y, train_size, test_size)
