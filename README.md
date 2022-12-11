@@ -52,4 +52,4 @@ Before the first run: Specify which participant's data to download in block 2. B
 You can switch between EEG types in block 3.
 
 After setting these parameters, just run every block. You're going to see feedback about the training process, the best performing model's going to be saved. After the training process ends, the script will load the best model and show its evaluation and metrics.
-The hyperparameter optimizer runs more trainings, and further trains the best model, but works the same way other than that.
+The hyperparameter optimizer runs more trainings, and further trains the best model, but essentially works the same way.
